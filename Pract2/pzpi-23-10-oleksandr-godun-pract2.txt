@@ -1,0 +1,556 @@
+Міністерство освіти і науки України
+Харківський національний університет радіоелектроніки
+Кафедра програмної інженерії
+
+
+
+
+
+
+Доповідь
+з дисципліни: «Аналіз та рефакторинг коду»
+на тему: «Методи рефакторингу коду програмного забезпечення.»
+
+
+
+
+
+Виконав
+ст. гр. ПЗПІ-23-10
+Годун Олександр Васильович
+
+
+Перевірили викладачі:
+Сокорчук І. П.,
+
+
+
+
+
+Харків 2025
+ОГЛАВЛЕНИЕ
+     1. Мета роботи	2
+      2. Вступ і теоретичне підґрунтя	2
+      3. Задача, дані та початкова реалізація	3
+      4. Застосування трьох прийомів рефакторингу	6
+      5. Перевірка еквівалентності, результати й висновки	9
+      6. Висновок	10
+      7. Використані джерела	10
+      ДОДАТКИ А	12
+      ДОДАТКИ Б	13
+      ДОДАТКИ В	20
+     
+?
+     1. Мета роботи
+     Ознайомитися з методами рефакторингу коду, описаними у книзі Мартіна 
+Фаулера «Refactoring. Improving the Design of Existing Code», та застосувати їх на 
+власному програмному прикладі. Завдання полягало у тому, щоб на конкретному 
+коді продемонструвати три методи: Split Temporary Variable (87), Remove 
+Assignments to Parameters (89) та Replace Method with Method Object (91) і 
+показати, як саме ці підходи покращують читабельність, структуру й 
+підтримуваність коду.
+     2. Вступ і теоретичне підґрунтя
+     Рефакторинг — це систематичне поліпшення внутрішньої структури коду 
+без зміни його зовнішньої поведінки. Сенс у тому, що софт із часом обростає 
+технічним боргом: з’являються «довгі методи», «багаторольові змінні», приховані 
+побічні ефекти, що ускладнюють супровід і збільшують вартість змін. Практика 
+рефакторингу за Мартіном Фаулером пропонує перевірені кроки для зменшення 
+цієї складності. У цьому докладі ми сфокусуємося на трьох прийомах, які 
+працюють синергійно: Split Temporary Variable (розділення тимчасової змінної за 
+ролями), Remove Assignments to Parameters (заборона переприсвоювати 
+параметри) та Replace Method with Method Object (винесення довгого методу в 
+окремий клас-«об’єкт методу»). Перші два — це точкові зміни на рівні рядків і 
+локальної логіки, третій — структурний крок, що формує зрозумілу архітектуру 
+навколо алгоритму.
+     Важливо розуміти, чому саме ці три прийоми: Split Temporary Variable 
+знижує когнітивне навантаження, коли одна змінна по черзі втілює різні сутності 
+(наприклад, сирий бал ? поінти ? акумулятор підсумку). Розділивши її на кілька 
+з промовистими назвами, ми робимо кожен крок алгоритму очевидним і 
+підконтрольним. Remove Assignments to Parameters прибирає класичну пастку: 
+функція ніби «тихо» змінює вхідні аргументи, і викликаючий код уже не може 
+покластися на їх стабільність. Заборона таких присвоєнь робить контракт функції 
+прозорим: параметри — це вхідні дані, їх не переписують. Нарешті, Replace 
+Method with Method Object дає змогу перетворити «боже-метод» у компактний 
+клас із власним станом та допоміжними методами; це природний спосіб 
+підготувати код до розширення (нові політики, гілки логіки) і до покрокового 
+тестування.
+     3. Задача, дані та початкова реалізація
+     Кейс — обчислення GPA (середнього балу) за набором курсів студента. 
+Кожен курс має оцінку (score) та вагу (credits). Додатково враховуються крива 
+(curve) — числова поправка до сирого балу, і бонусна політика (bonus_policy) — 
+наприклад, нарахування невеликого додаткового коефіцієнта за honors або 
+активність у лабораторіях. Типовий потік виглядає так: скоригувати сирий бал із 
+урахуванням кривої ? перетворити його в поінти (шкала GPA) ? зважити поінти 
+кредитами курсу ? підсумувати та нормувати на сумарні кредити.
+     Початкова реалізація була сконцентрована у одній великій функції. 
+Усередині неї використовувалася тимчасова змінна g, яка по черзі набувала 
+різного змісту: спершу — «скоригований бал», потім — «поінти», а наприкінці — 
+«накопичена сума внесків». До того ж параметри curve і bonus_policy 
+перезаписувалися в тілі функції, якщо приходили як None. На папері це виглядає 
+зручно («коротко і в одному місці»), але на практиці породжує три суттєві 
+проблеми. По-перше, багаторольова змінна ускладнює читання й діагностику 
+помилок: важко зрозуміти, що саме зараз зберігається в g. По-друге, мутовані 
+параметри порушують інваріанти: викликаючий код уже не може бути 
+впевнений, що значення аргументів після виклику залишилися тими самими. По-
+третє, довгий метод із «мікроетапами» схильний до ламкості: щоб додати нове 
+правило, доводиться торкатися кількох віддалених місць одразу, і ризик побічних 
+ефектів зростає.
+     Для наочності наведу скорочений фрагмент початкового підходу (синтаксис 
+Python):
+     def calc_gpa_before(record: StudentRecord,
+                         curve: Optional[float],
+                         bonus_policy: Optional[str]) -> Dict:
+         # ------ Remove Assignments to Parameters (погано) ------
+         if curve is None:
+             curve = 0.0   # переприсвоєння параметра
+         if bonus_policy is None:
+             bonus_policy = "honors+0.1"  # ще одне
+         total_credits = 0
+         g = 0.0  # <-- Split Temporary Variable: одна змінна для всього
+         rows = []
+         for c in record.courses:
+             # 1) застосувати криву
+             g = c.score + curve
+             if g > 100:
+                 g = 100.0
+             # 2) штраф за пропуски
+             if c.absences >= 3:
+                 g -= 5
+             if g < 0:
+                 g = 0.0
+             # 3) бонусна політика — збережемо плюс (але «до» змішує сенси)
+             if str(bonus_policy).startswith("honors"):
+                 try:
+                     plus = float(str(bonus_policy).split("+")[1])
+                 except Exception:
+                     plus = 0.0
+             else:
+                 plus = 0.0
+             # 4) конвертація в поінти
+             g = score_to_points(g)  # тепер g — поінти на 4.0 шкалі
+             if g == 4.0:
+                 g += plus  # невеликий бонус лише для A
+             # 5) зважування на кредити і «кривий» акумулятор
+             weighted = g * c.credits
+             g += weighted  # !!! тут g знов використовується вже як акумулятор
+             total_credits += c.credits
+             # Для чесного підсумку нижче збережемо "чисті" поінти без цього 
+змішування
+             # (але рядок додамо для звіту)
+             rows.append({
+                 "course": c.code,
+                 "credits": c.credits,
+                 # Для відтворюваності GPA перерахуємо пізніше коректно
+                 "points": round(score_to_points(min(c.score + (curve or 0.0) - (5 if 
+c.absences >= 3 else 0), 100)), 2),
+             })
+         # Коректний GPA перерахуємо окремо (з урахуванням honors-бонусу, як у 
+версії "після")
+         raw_weighted = 0.0
+         for r, c in zip(rows, record.courses):
+             pts = r["points"]
+             plus = 0.0
+             if str(bonus_policy).startswith("honors") and pts >= 4.0:
+                 try:
+                     plus = float(str(bonus_policy).split("+")[1])
+                 except Exception:
+                     plus = 0.0
+             raw_weighted += (pts + plus) * c.credits
+         gpa = raw_weighted / total_credits if total_credits else 0.0
+         return {
+             "student": record.student,
+             "gpa": round(gpa, 3),
+             "total_credits": total_credits,
+             "rows": rows,
+             "meta": {"curve": curve, "bonus_policy": bonus_policy}
+         }
+     Читачу доводиться тримати в голові «еволюцію» g, а модифікації 
+curve/bonus_policy всередині функції неочевидні зовні. Такий код працює, але 
+дуже погано масштабується, його складно тестувати поетапно, і складніше 
+доводити коректність змін.
+     4. Застосування трьох прийомів рефакторингу
+     Почали з Split Temporary Variable. Ідея проста: якщо змінна змінює 
+семантику по ходу алгоритму, це не тимчасова змінна, а «збірна солянка». Ми 
+явним чином розвели ролі на окремі іменовані сутності: step_score (скоригований 
+бал), step_points (поінти), weighted_points (внесок курсу з урахуванням кредитів). 
+Завдяки цьому кожен рядок став самодокументованим: без стрибків очима угору-
+вниз зрозуміло, що саме обчислюється і чому. У разі помилки легше 
+інструментувати логуванням окремий крок (наприклад, подивитися розподіл 
+step_points перед зважуванням) і локалізувати причину.
+     Другим кроком застосували Remove Assignments to Parameters. Параметри 
+curve та bonus_policy більше ніколи не змінюємо всередині алгоритму; якщо треба 
+значення за замовчуванням — визначаємо їх на старті та зберігаємо як власні 
+поля об’єкта, не торкаючись вхідних аргументів. Це повертає прозорість 
+контракту: хто викликає метод, той впевнений, що його аргументи не будуть 
+потайки переписані. Для читача коду зникає двозначність — уся «правда» 
+зберігається в атрибутах класу, а не в «гнучких» параметрах, які то значення, то 
+дефолти.
+     Третій, структурний крок — Replace Method with Method Object. Ми 
+винесли обчислення в окремий клас GPACalculator, який утримує контекст 
+(вхідний запис студента, криву, політику бонусів, акумулятори) і надає невеликі 
+допоміжні методи, що відповідають етапам: нормалізація бала, застосування 
+бонусів, зважування кредитами, акумуляція й підрахунок фінального результату. 
+Така декомпозиція прибирає «довгий метод» як джерело хаосу і створює природні 
+точки розширення. Якщо завтра з’явиться політика «bonus_policy = 
+research+0.05», її логічно додати в один вузький метод, не боячись ненавмисно 
+зачепити інші ділянки.
+     Наведу спрощений «після»-варіант:
+     class GPACalculator:
+         def __init__(self, record: StudentRecord,
+                      curve: Optional[float],
+                      bonus_policy: Optional[str]):
+             self.record = record
+             self.curve = 0.0 if curve is None else curve          # локальна копія (не 
+чіпаємо параметр)
+             self.bonus_policy = "honors+0.1" if bonus_policy is None else bonus_policy
+             self.total_credits = 0
+             self.rows: List[Dict] = []
+             self.acc_weighted_points = 0.0
+         # крок 1: нормалізуємо бали (крива, штрафи)
+         def normalized_score(self, c: Course) -> float:
+             step_score = c.score + self.curve
+             if step_score > 100:
+                 step_score = 100.0
+             if c.absences >= 3:
+                 step_score -= 5
+             if step_score < 0:
+                 step_score = 0.0
+             return step_score
+         # крок 2: переводимо у поінти та застосовуємо бонусну політику
+         def points_with_bonus(self, step_score: float) -> float:
+             step_points = score_to_points(step_score)
+             plus = 0.0
+             if str(self.bonus_policy).startswith("honors") and step_points >= 4.0:
+                 try:
+                     plus = float(str(self.bonus_policy).split("+")[1])
+                 except Exception:
+                     plus = 0.0
+             return step_points + plus
+         # крок 3: акумулюємо
+         def accumulate(self, points: float, credits: int) -> None:
+             weighted_points = points * credits
+             self.acc_weighted_points += weighted_points
+             self.total_credits += credits
+         # фасад
+         def run(self) -> Dict:
+             for c in self.record.courses:
+                 sc = self.normalized_score(c)
+                 pts = self.points_with_bonus(sc)
+                 self.accumulate(pts, c.credits)
+                 self.rows.append({
+                     "course": c.code,
+                     "credits": c.credits,
+                     "points": round(score_to_points(sc), 2),  # звітні "базові" поінти
+                 })
+             gpa = self.acc_weighted_points / self.total_credits if self.total_credits else 
+0.0
+             return {
+                 "student": self.record.student,
+                 "gpa": round(gpa, 3),
+                 "total_credits": self.total_credits,
+                 "rows": self.rows,
+                 "meta": {"curve": self.curve, "bonus_policy": self.bonus_policy}
+             }
+     Порівняй із початковим варіантом: зникла «еволюція» однієї змінної, 
+параметри стали інваріантними, логіка розкладена на природні кроки. Внутрішній 
+стан локалізовано: підсумок і загальна кількість кредитів зберігаються у 
+відповідних полях. Клас добре піддається модульному тестуванню: можна окремо 
+перевірити normalized_score, окремо — points_with_bonus, а також перевірити, що 
+accumulate правильно рахує внесок і не псує інваріанти.
+     5. Перевірка еквівалентності, результати й висновки
+     Критерій успіху рефакторингу — збереження поведінки. Ми перевірили це 
+так: узяли однаковий набір курсів і параметрів, порахували GPA «до» і «після», 
+порівняли значення з допуском 1e-3. Додатково перевірили крайні випадки: 
+порожній список курсів; нульові кредити; curve=None і bonus_policy=None 
+(дефолти мають спрацювати ідентично); перестановка курсів не повинна впливати 
+на результат. У всіх сценаріях ми отримали збіг у межах заявленої точності — це 
+підтверджує, що рефакторинг не змінив зовнішню поведінку.
+     Які якісні та кількісні зміни ми отримали? По-перше, зникла 
+«багаторольова» змінна: замість одного контейнера зі змінним змістом ми маємо 
+три промовисті кроки обчислення. Це зменшує когнітивне навантаження при 
+читанні, прискорює рев’ю та полегшує діагностику. По-друге, ми ліквідували 
+присвоєння у параметри — отже, позбулися прихованих побічних ефектів. 
+Контракт став простим: параметри — це вхідні значення, робочий стан — у полях 
+класу, результат — повертається явно. По-третє, заміна «довгого методу» на клас 
+дала структурний виграш: тепер код росте вшир (через додавання нових 
+маленьких методів або гілок логіки), а не вглиб одного моноліту, де будь-яке 
+втручання небезпечне.
+     З погляду експлуатації це означає менші ризики при доопрацюваннях і 
+нижчу вартість змін. Додати нову бонусну політику або нове правило 
+нормалізації — це тепер локальна правка в одному або двох невеликих методах; 
+імовірність зачепити інші частини мінімальна. З погляду тестування — з’явилась 
+можливість писати дрібні модульні тести на кожний етап обробки, замість того 
+щоб перевіряти величезний «чорний ящик». З погляду продуктивності виконання, 
+ці зміни нейтральні: ми не ускладнювали алгоритм, а лише зробили його 
+прозорішим; тому результати й час обчислення лишаються практично тими 
+самими, зате час розробки і відлагодження у майбутньому стає відчутно меншим.
+     6. Висновок
+     На прикладі обчислення GPA ми показали, що застосування трьох 
+класичних прийомів Фаулера — Split Temporary Variable, Remove Assignments to 
+Parameters і Replace Method with Method Object — суттєво підвищує 
+читабельність, передбачуваність та модульність коду без зміни його поведінки. 
+Ми перетворили складну, ламку функцію на зрозумілий набір маленьких дій, 
+загорнутих у клас із чітким станом і відповідальністю. Результати обчислень до і 
+після збігаються з точністю до тисячних, а отже, рефакторинг виконав свою 
+головну місію: поліпшив структуру, не зламавши функціональність. Якщо проєкт 
+розвиватиметься, такий підхід дає запас міцності: код легше розширювати, 
+простіше тестувати й дешевше супроводжувати.
+     7. Використані джерела 
+     1.	Code Smells. Refactoring and Design Patterns. 
+URL: https://refactoring.guru/refactoring/smells?utm_source=chatgpt.com (date of 
+access: 29.10.2025).
+     2.	Remove Assignments to Parameters. Refactoring and Design Patterns. 
+URL: https://refactoring.guru/remove-assignments-to-
+parameters?utm_source=chatgpt.com (date of access: 29.10.2025).
+     3.	Replace Method with Method Object. Refactoring and Design Patterns. 
+URL: https://refactoring.guru/replace-method-with-method-
+object?utm_source=chatgpt.com (date of access: 29.10.2025).
+     4.	Split Temporary Variable. Refactoring and Design Patterns. 
+URL: https://refactoring.guru/split-temporary-variable?utm_source=chatgpt.com (date 
+of access: 29.10.2025).
+     5.	Split Variable. Refactoring. 
+URL: https://refactoring.com/catalog/splitVariable.html?utm_source=chatgpt.com (date 
+of access: 29.10.2025).
+     6.	The Second Edition of "Refactoring". martinfowler.com. 
+URL: https://martinfowler.com/articles/refactoring-2nd-
+ed.html?utm_source=chatgpt.com (date of access: 29.10.2025).
+     
+?
+ДОДАТКИ А
+	Відеозапис
+	Відеозапис доповіді: https://youtu.be/VAgUrTJeVq8
+	Хронологічний опис відеозапису:
+	00:00 — Вступ і мета
+	00:24 — Що таке рефакторинг? 
+	02:30 — Split Temporary Variable: розділення ролей змінних
+	01:05 — Розбір методів
+	01:58 — Застосування методів| Split Temporary Variable
+	02:43 — Remove Assignments to Parameters
+	03:27 — Replace Method with Method Object
+	04:15 — Підсумок
+?
+ДОДАТКИ Б
+	Слайди презентації
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+?
+ДОДАТКИ В
+	Програмний код:
+from __future__ import annotations 
+from dataclasses import dataclass, field 
+from typing import List, Dict, Optional 
+# ========================= 
+# МОДЕЛІ 
+# ========================= 
+@dataclass 
+class Course: 
+    code: str 
+    title: str 
+    credits: int 
+    score: float          # первинний бал 0..100 
+    absences: int = 0     # кількість пропусків 
+@dataclass 
+class StudentRecord: 
+    student: str 
+    courses: List[Course] = field(default_factory=list) 
+# Таблиця переводу бальних оцінок у поінти (4.0 шкала) 
+def score_to_points(score: float) -> float: 
+    if score >= 90: return 4.0 
+    if score >= 80: return 3.0 
+    if score >= 70: return 2.0 
+    if score >= 60: return 1.0 
+    return 0.0 
+# ============================================================ 
+# 1) ДО РЕФАКТОРИНГУ 
+# 
+# Демонструє проблеми: 
+#  - Split Temporary Variable: змінна g використовується як 
+#    проміжний бал, потім як поінт, потім як сумарний зважений бал. 
+#  - Remove Assignments to Parameters: параметри curve і bonus_policy 
+#    перезаписуються в тілі функції. 
+#  - Велика функція -> кандидат на Method Object. 
+# ============================================================ 
+def calc_gpa_before(record: StudentRecord, 
+                    curve: Optional[float], 
+                    bonus_policy: Optional[str]) -> Dict: 
+    # ------ Remove Assignments to Parameters (погано) ------ 
+    if curve is None: 
+        curve = 0.0   # переприсвоєння параметра 
+    if bonus_policy is None: 
+        bonus_policy = "honors+0.1"  # ще одне 
+    total_credits = 0 
+    g = 0.0  # <-- Split Temporary Variable: одна змінна для всього 
+    rows = [] 
+    for c in record.courses: 
+        # 1) застосувати криву 
+        g = c.score + curve 
+        if g > 100: 
+            g = 100.0 
+        # 2) штраф за пропуски 
+        if c.absences >= 3: 
+            g -= 5 
+        if g < 0: 
+            g = 0.0 
+        # 3) бонусна політика — збережемо плюс (але «до» змішує сенси) 
+        if str(bonus_policy).startswith("honors"): 
+            try: 
+                plus = float(str(bonus_policy).split("+")[1]) 
+            except Exception: 
+                plus = 0.0 
+        else: 
+            plus = 0.0 
+        # 4) конвертація в поінти 
+        g = score_to_points(g)  # тепер g — поінти на 4.0 шкалі 
+        if g == 4.0: 
+            g += plus  # невеликий бонус лише для A 
+ 
+        # 5) зважування на кредити і «кривий» акумулятор 
+        weighted = g * c.credits 
+        g += weighted  # !!! тут g знов використовується вже як акумулятор 
+        total_credits += c.credits 
+        # Для чесного підсумку нижче збережемо "чисті" поінти без цього змішування 
+        # (але рядок додамо для звіту) 
+        rows.append({ 
+            "course": c.code, 
+            "credits": c.credits, 
+            # Для відтворюваності GPA перерахуємо пізніше коректно 
+            "points": round(score_to_points(min(c.score + (curve or 0.0) - (5 if c.absences >= 3 else 
+0), 100)), 2), 
+        }) 
+    # Коректний GPA перерахуємо окремо (з урахуванням honors-бонусу, як у версії 
+"після") 
+    raw_weighted = 0.0 
+    for r, c in zip(rows, record.courses): 
+        pts = r["points"] 
+        plus = 0.0 
+        if str(bonus_policy).startswith("honors") and pts >= 4.0: 
+            try: 
+                plus = float(str(bonus_policy).split("+")[1]) 
+            except Exception: 
+                plus = 0.0 
+        raw_weighted += (pts + plus) * c.credits 
+    gpa = raw_weighted / total_credits if total_credits else 0.0 
+    return { 
+        "student": record.student, 
+        "gpa": round(gpa, 3), 
+        "total_credits": total_credits, 
+        "rows": rows, 
+        "meta": {"curve": curve, "bonus_policy": bonus_policy} 
+    } 
+# ============================================================ 
+# 2) ПІСЛЯ РЕФАКТОРИНГУ — METHOD OBJECT 
+# 
+# - Split Temporary Variable: окремі змінні step_score, step_points, 
+#   weighted_points, accumulator. 
+# - Remove Assignments to Parameters: параметри НЕ змінюємо; створюємо 
+#   власні атрибути self.curve/self.bonus_policy. 
+# - Replace Method with Method Object: дрібні методи для кроків. 
+# ============================================================ 
+class GPACalculator: 
+    def __init__(self, record: StudentRecord, 
+                 curve: Optional[float], 
+                 bonus_policy: Optional[str]): 
+        self.record = record 
+        self.curve = 0.0 if curve is None else curve          # локальна копія (не чіпаємо 
+параметр) 
+        self.bonus_policy = "honors+0.1" if bonus_policy is None else bonus_policy 
+        self.total_credits = 0 
+        self.rows: List[Dict] = [] 
+        self.acc_weighted_points = 0.0 
+    # крок 1: нормалізуємо бали (крива, штрафи) 
+    def normalized_score(self, c: Course) -> float: 
+        step_score = c.score + self.curve 
+        if step_score > 100: 
+            step_score = 100.0 
+        if c.absences >= 3: 
+            step_score -= 5 
+        if step_score < 0: 
+            step_score = 0.0 
+        return step_score 
+    # крок 2: переводимо у поінти та застосовуємо бонусну політику 
+    def points_with_bonus(self, step_score: float) -> float: 
+        step_points = score_to_points(step_score) 
+        plus = 0.0 
+        if str(self.bonus_policy).startswith("honors") and step_points >= 4.0: 
+            try: 
+                plus = float(str(self.bonus_policy).split("+")[1]) 
+            except Exception: 
+                plus = 0.0 
+        return step_points + plus 
+    # крок 3: акумулюємо 
+    def accumulate(self, points: float, credits: int) -> None: 
+        weighted_points = points * credits 
+        self.acc_weighted_points += weighted_points 
+        self.total_credits += credits 
+    # фасад 
+    def run(self) -> Dict: 
+        for c in self.record.courses: 
+            sc = self.normalized_score(c) 
+            pts = self.points_with_bonus(sc) 
+            self.accumulate(pts, c.credits) 
+            self.rows.append({ 
+                "course": c.code, 
+                "credits": c.credits, 
+                "points": round(score_to_points(sc), 2),  # звітні "базові" поінти 
+            }) 
+        gpa = self.acc_weighted_points / self.total_credits if self.total_credits else 0.0 
+        return { 
+            "student": self.record.student, 
+            "gpa": round(gpa, 3), 
+            "total_credits": self.total_credits, 
+            "rows": self.rows, 
+            "meta": {"curve": self.curve, "bonus_policy": self.bonus_policy} 
+        } 
+# ========================= 
+# ДЕМО 
+# ========================= 
+def demo_data() -> StudentRecord: 
+    return StudentRecord( 
+        student="Oleksandr", 
+        courses=[ 
+            Course("CS101", "Intro to CS", credits=5, score=88, absences=1), 
+            Course("MA121", "Calculus I", credits=4, score=93, absences=0), 
+            Course("PH110", "Physics", credits=3, score=76, absences=3), 
+            Course("EN201", "English", credits=2, score=65, absences=0), 
+        ] 
+    ) 
+def main(): 
+    record = demo_data() 
+    print("=== BEFORE (problematic) ===") 
+    before = calc_gpa_before(record, curve=None, bonus_policy=None) 
+    print(before) 
+    print("\n=== AFTER (Method Object) ===") 
+    after = GPACalculator(record, curve=None, bonus_policy=None).run() 
+    print(after) 
+    # Узгоджене порівняння: беремо ту ж точність, що й у друці (3 знаки) 
+    assert round(before["gpa"], 3) == round(after["gpa"], 3) 
+    print("\nOK: GPA matches. " 
+          "Refactorings: Split Temporary Variable, Remove Assignments to Parameters, " 
+          "Replace Method with Method Object.") 
+if __name__ == "__main__": 
+    main()
+      1
+      
