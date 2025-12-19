@@ -1,0 +1,149 @@
+// =====================================
+//  Prisma schema for Personal Planner
+// =====================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ==========================
+//  Модель користувачів
+// ==========================
+model Users {
+  user_id       Int                  @id @default(autoincrement())
+  email         String               @unique
+  password_hash String
+  name          String
+  last_name     String?              // прізвище користувача
+  birth_date    DateTime?            // дата народження
+
+  // зв’язки
+  categories    Categories[]
+  tasks         Tasks[]
+  devices       Devices[]
+  statistics    Statistics[]
+
+  // нові зв’язки для спільних планерників
+  ownedPlanners Planner[]            @relation("UserOwnedPlanners")
+  subscriptions PlannerSubscription[]
+}
+
+// ==========================
+//  Категорії
+// ==========================
+model Categories {
+  category_id Int      @id @default(autoincrement())
+  user_id     Int
+  name        String
+  color       String?
+
+  users  Users  @relation(fields: [user_id], references: [user_id])
+  tasks  Tasks[]
+}
+
+// ==========================
+//  Статуси задач
+// ==========================
+model Statuses {
+  status_id   Int      @id @default(autoincrement())
+  name        String
+  description String?
+
+  tasks Tasks[]
+}
+
+// ==========================
+//  Задачі
+// ==========================
+model Tasks {
+  task_id      Int        @id @default(autoincrement())
+  user_id      Int
+  planner_id   Int?
+  title        String
+  description  String?
+  category_id  Int?
+  status_id    Int?
+  priority     Int?
+  start_time   DateTime?           // коли почати
+  duration     Int?                // скільки хвилин/годин виділено
+  deadline     DateTime?           // кінцева дата дедлайну
+  is_shared    Boolean   @default(false)
+  is_repeating Boolean    @default(false)  // прапорець повторюваної задачі
+
+  users        Users      @relation(fields: [user_id], references: [user_id])
+  categories   Categories? @relation(fields: [category_id], references: [category_id])
+  statuses     Statuses?  @relation(fields: [status_id], references: [status_id])
+  planner      Planner?   @relation(fields: [planner_id], references: [planner_id])
+}
+
+
+// ==========================
+//  Пристрої (IoT)
+// ==========================
+model Devices {
+  device_id  Int      @id @default(autoincrement())
+  user_id    Int
+  esp_id     String
+  state      String
+  last_sync  DateTime @default(now())
+
+  users      Users    @relation(fields: [user_id], references: [user_id])
+}
+
+// ==========================
+//  Статистика
+// ==========================
+model Statistics {
+  stats_id           Int      @id @default(autoincrement())
+  user_id            Int
+  period             String
+  completed_percent  Float
+  overload_days      Int
+  category_balance   Float
+  recommendation_text String?
+
+  users              Users    @relation(fields: [user_id], references: [user_id])
+}
+
+// ==========================
+//  Нові моделі: Планерники
+// ==========================
+model Planner {
+  planner_id  Int                 @id @default(autoincrement())
+  name        String
+  owner_id    Int
+  is_public   Boolean             @default(false)
+  created_at  DateTime            @default(now())
+
+  owner       Users               @relation("UserOwnedPlanners", fields: [owner_id], references: [user_id])
+  subscribers PlannerSubscription[]
+  tasks       Tasks[]
+}
+
+// ==========================
+//  Нові моделі: Підписки
+// ==========================
+model PlannerSubscription {
+  id            Int       @id @default(autoincrement())
+  planner_id    Int
+  user_id       Int
+  role          Role      @default(USER)
+  subscribed_at DateTime  @default(now())
+
+  planner       Planner   @relation(fields: [planner_id], references: [planner_id])
+  user          Users     @relation(fields: [user_id], references: [user_id])
+}
+
+// ==========================
+//  Enum для ролей
+// ==========================
+enum Role {
+  OWNER
+  ADMIN
+  USER
+}
